@@ -3,102 +3,126 @@ import { AudioSession } from '../types';
 export const DEMO_SESSIONS: AudioSession[] = [
   {
     id: 'demo-1',
-    title: 'AI Engineering Strategy & Real-time Audio Sync',
+    title: 'Windows Meeting Intelligence & Core Architecture Sync',
+    context: {
+      title: 'Windows Meeting Intelligence & Core Architecture Sync',
+      objective: 'Agree on zero-distortion Windows WASAPI loopback audio capture and local Whisper STT pipeline.',
+      expectedOutcome: 'Finalized dual-stream audio architecture and timestamp-linked Notion AI notes.',
+      watchList: ['unresolved technical issues', 'owners', 'deadlines', 'decisions', 'risks', 'data quality problems'],
+    },
     createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
     durationSeconds: 184,
-    audioSource: 'demo',
+    audioSource: 'dual',
     status: 'completed',
     transcript: [
-      { id: '1', timestamp: 0, text: "Good morning team. Today we're reviewing our strategy for building real-time browser audio streaming.", isFinal: true, speaker: 'Host' },
-      { id: '2', timestamp: 8, text: "We need low-latency English speech recognition directly captured from the browser tab or microphone.", isFinal: true, speaker: 'Host' },
-      { id: '3', timestamp: 18, text: "When the user clicks Start, we begin capturing audio streams and streaming live transcription to the UI in real time.", isFinal: true, speaker: 'Engineer A' },
-      { id: '4', timestamp: 28, text: "And when they hit End, the Gemini 3.6 Flash model automatically processes the entire transcript payload.", isFinal: true, speaker: 'Engineer A' },
-      { id: '5', timestamp: 40, text: "It generates executive summaries, key takeaways, topic breakdowns, and actionable task lists within seconds.", isFinal: true, speaker: 'Product Lead' },
-      { id: '6', timestamp: 54, text: "Make sure we support browser tab audio via getDisplayMedia as well as microphone input for hybrid meetings.", isFinal: true, speaker: 'Product Lead' },
-      { id: '7', timestamp: 68, text: "Also, we should include an interactive Q&A tab where users can ask Gemini questions directly about what was discussed.", isFinal: true, speaker: 'Host' },
-      { id: '8', timestamp: 85, text: "That sounds like a great plan. Let me finalize the Express API endpoints for session analysis and Q&A.", isFinal: true, speaker: 'Engineer A' },
-      { id: '9', timestamp: 102, text: "Great! Let's ship this live audio transcription extension interface and test the streaming performance.", isFinal: true, speaker: 'Host' },
+      { id: '1', startTime: 0, endTime: 7, timestamp: 0, text: "Good morning everyone. Today we are finalizing the Windows meeting recorder architecture.", source: 'microphone', speaker: 'Me', confidence: 0.96, isFinal: true },
+      { id: '2', startTime: 8, endTime: 17, timestamp: 8, text: "The primary requirement is that meeting playback quality must not be altered or distorted when the recorder starts.", source: 'system', speaker: 'Meeting', confidence: 0.94, isFinal: true },
+      { id: '3', startTime: 18, endTime: 27, timestamp: 18, text: "We decided to passively tap the Windows output stream using WASAPI Loopback on the default render endpoint.", source: 'system', speaker: 'Meeting', confidence: 0.95, isFinal: true },
+      { id: '4', startTime: 28, endTime: 39, timestamp: 28, text: "Never connect captured audio back to audioContext.destination because that creates terrible echo and feedback loops.", source: 'microphone', speaker: 'Me', confidence: 0.97, isFinal: true },
+      { id: '5', startTime: 40, endTime: 53, timestamp: 40, text: "Alex will implement the local VAD and 16kHz PCM downsampler by next Friday.", source: 'system', speaker: 'Meeting', confidence: 0.93, isFinal: true },
+      { id: '6', startTime: 54, endTime: 67, timestamp: 54, text: "Sarah is assigned to connect the Gemini post-meeting reasoning engine with structured timestamp links.", source: 'system', speaker: 'Meeting', confidence: 0.92, isFinal: true },
+      { id: '7', startTime: 68, endTime: 84, timestamp: 68, text: "What is our fallback strategy if the user does not have an active microphone connected?", source: 'microphone', speaker: 'Me', confidence: 0.95, isFinal: true },
+      { id: '8', startTime: 85, endTime: 101, timestamp: 85, text: "The system loopback recording will continue unimpeded. Graceful degradation is built into every layer.", source: 'system', speaker: 'Meeting', confidence: 0.94, isFinal: true },
+      { id: '9', startTime: 102, endTime: 118, timestamp: 102, text: "Agreed. Let us proceed with this architecture and test both Teams and Zoom desktop integration.", source: 'microphone', speaker: 'Me', confidence: 0.98, isFinal: true },
     ],
     analysis: {
-      title: 'AI Engineering Strategy & Real-time Audio Sync',
-      summary: 'The team discussed the technical strategy and requirements for building a browser audio streaming extension. Key priorities include real-time English speech-to-text, dual audio input support (mic and tab audio), and automated AI analysis via Gemini 3.6 Flash upon ending the stream.',
-      sentiment: 'Collaborative & Focused',
-      wordCount: 148,
-      keyTopics: [
+      title: 'Windows Meeting Intelligence & Core Architecture Sync',
+      objective: 'Agree on zero-distortion Windows WASAPI loopback audio capture and local Whisper STT pipeline.',
+      executiveSummary: 'The team agreed on an independent dual-stream Windows audio architecture. System audio from Teams and Zoom is passively captured via WASAPI loopback without feeding back into speakers, preventing echo and distortion. Realtime STT runs locally over 16kHz PCM frames, reserving Gemini for structured post-meeting reasoning with timestamp links.',
+      summary: 'The team agreed on an independent dual-stream Windows audio architecture. System audio from Teams and Zoom is passively captured via WASAPI loopback without feeding back into speakers, preventing echo and distortion.',
+      decisions: [
         {
-          topic: 'Real-time Audio Streaming Architecture',
-          details: [
-            'Capturing browser tab audio via getDisplayMedia and microphone input.',
-            'Displaying instant English text stream with minimal latency.',
-            'Triggering start and end audio session handlers.'
-          ]
+          decision: 'Passively tap Windows audio output via WASAPI Loopback (AUDCLNT_STREAMFLAGS_LOOPBACK) without re-routing to speakers.',
+          context: 'Discussed at [00:18] to eliminate audio distortion and feedback during Teams/Zoom calls.',
+          timestamp: 18,
         },
         {
-          topic: 'Gemini AI Note Generation',
-          details: [
-            'Automated execution of session analysis when recording ends.',
-            'Extracting structured JSON summaries, key topics, action items, and sentiment.',
-            'Providing interactive Q&A module for transcript interrogation.'
-          ]
-        }
+          decision: 'Decouple Pipeline A (lossless session recording) from Pipeline B (16kHz mono PCM for local STT).',
+          context: 'Agreed at [00:28] to ensure recording quality is not compromised for speech-to-text.',
+          timestamp: 28,
+        },
+        {
+          decision: 'Reserve Gemini strictly for post-meeting reasoning and structured intelligence instead of streaming 3-second slices.',
+          context: 'Agreed during sync at [01:42] to avoid 429 rate limit quotas and slice hallucinations.',
+          timestamp: 102,
+        },
       ],
       actionItems: [
-        'Finalize Express API endpoints /api/analyze-session and /api/ask-session.',
-        'Implement dual audio stream capture for both microphone and browser tab.',
-        'Add interactive Q&A chat interface to query recorded transcripts.',
-        'Ensure real-time wave visualizer works during active audio streaming.'
+        {
+          task: 'Implement local VAD and 16kHz PCM downsampler worker',
+          owner: 'Alex',
+          deadline: 'Next Friday',
+          priority: 'high',
+          timestamp: 40,
+        },
+        {
+          task: 'Connect Gemini structured post-meeting reasoning schema with timestamp linking',
+          owner: 'Sarah',
+          deadline: 'Not specified',
+          priority: 'high',
+          timestamp: 54,
+        },
+        {
+          task: 'Verify graceful degradation when microphone or loopback audio is unavailable',
+          owner: 'Not specified',
+          deadline: 'Not specified',
+          priority: 'medium',
+          timestamp: 85,
+        },
+      ],
+      importantPoints: [
+        {
+          topic: 'WASAPI Loopback Capture Mechanism',
+          detail: 'Loopback captures the mixed Windows render endpoint directly from audio hardware with zero latency and no virtual cable requirement.',
+          timestamp: 18,
+        },
+        {
+          topic: 'Independent Streams ([Me] vs [Meeting])',
+          detail: 'Microphone and meeting streams are processed separately, enabling exact speaker attribution between local participant and external meeting callers.',
+          timestamp: 28,
+        },
+        {
+          topic: 'Graceful Degradation Strategy',
+          detail: 'If microphone permission is denied or device disconnected, system audio recording and transcription continues without failing.',
+          timestamp: 85,
+        },
+      ],
+      risks: [
+        {
+          risk: 'Browser sandbox restrictions prevent direct WASAPI COM initialization without desktop shell.',
+          impact: 'Browser fallback must use getDisplayMedia passive loopback, requiring user to check "Share audio".',
+          suggestedFollowUp: 'Package application via Electron desktop shell with native WASAPI bindings.',
+        },
+        {
+          risk: 'High CPU usage if large Whisper models are executed on low-spec laptops.',
+          impact: 'Audio stutter or delayed transcription on bronze hardware.',
+          suggestedFollowUp: 'Hardware detector automatically configures Whisper Tiny for machines with under 4 cores.',
+        },
+      ],
+      openQuestions: [
+        'Are there specific antivirus restrictions on Windows 11 loopback capture endpoints in enterprise environments?',
+      ],
+      followUps: [
+        'Run end-to-end integration test with Microsoft Teams desktop app and Zoom desktop app.',
+        'Benchmark CPU utilization of Whisper Base vs Whisper Tiny under heavy meeting traffic.',
+      ],
+      keyTopics: [
+        {
+          topic: 'WASAPI Loopback Capture Mechanism',
+          details: ['Loopback captures the mixed Windows render endpoint directly from audio hardware.'],
+        },
+        {
+          topic: 'Independent Streams ([Me] vs [Meeting])',
+          details: ['Microphone and meeting streams are processed separately for attribution.'],
+        },
       ],
       keyTakeaways: [
-        'Browser tab capture enables transcribing Zoom/Meet/YouTube audio directly.',
-        'Gemini 3.6 Flash processes full meeting transcripts in under 2 seconds.',
-        'Live streaming STT allows users to verify accuracy during active speaking.'
-      ]
-    }
+        'Zero-echo guarantee achieved by passive tapping without connecting to speaker destination.',
+        'Local 16kHz PCM pipeline cuts Gemini API token consumption by over 95%.',
+        'Timestamps allow jumping directly to key decisions in audio playback.',
+      ],
+      sentiment: 'Collaborative & Technical',
+      wordCount: 172,
+    },
   },
-  {
-    id: 'demo-2',
-    title: 'Product Strategy & Customer Growth Review',
-    createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-    durationSeconds: 245,
-    audioSource: 'demo',
-    status: 'completed',
-    transcript: [
-      { id: '101', timestamp: 0, text: "Welcome everyone to our monthly product growth and user feedback review.", isFinal: true, speaker: 'Sarah' },
-      { id: '102', timestamp: 12, text: "Our monthly active user base grew by 28 percent following the launch of AI meeting note exports.", isFinal: true, speaker: 'Sarah' },
-      { id: '103', timestamp: 25, text: "Users love being able to record lectures and podcast streams and instantly export structured markdown notes.", isFinal: true, speaker: 'Dave' },
-      { id: '104', timestamp: 42, text: "However, several users requested better noise filtering when recording in noisy coffee shops.", isFinal: true, speaker: 'Dave' },
-      { id: '105', timestamp: 60, text: "We should implement client-side audio gain normalization and Web Audio API filters.", isFinal: true, speaker: 'Alex' },
-      { id: '106', timestamp: 80, text: "Agreed. Let's schedule the audio filtering enhancement for next week's sprint.", isFinal: true, speaker: 'Sarah' }
-    ],
-    analysis: {
-      title: 'Product Strategy & Customer Growth Review',
-      summary: 'Monthly review highlighting a 28% increase in active users due to AI meeting notes. User feedback identified a need for audio noise suppression during mobile recording.',
-      sentiment: 'Optimistic & Data-Driven',
-      wordCount: 95,
-      keyTopics: [
-        {
-          topic: 'User Growth Metrics',
-          details: [
-            '28% increase in active monthly users post launch.',
-            'High retention around structured Markdown exports.'
-          ]
-        },
-        {
-          topic: 'Feature Enhancements',
-          details: [
-            'Noise suppression needed for background audio.',
-            'Web Audio API filters scheduled for upcoming sprint.'
-          ]
-        }
-      ],
-      actionItems: [
-        'Implement Web Audio API noise filtering and gain controls.',
-        'Add one-click Markdown and PDF export options.'
-      ],
-      keyTakeaways: [
-        'AI notes export is the top retention feature for users.',
-        'Audio quality preprocessing significantly improves speech accuracy.'
-      ]
-    }
-  }
 ];

@@ -1,12 +1,13 @@
 import React, { useEffect, useRef } from 'react';
-import { AudioStreamManager } from '../utils/audioStreamer';
+import { AudioCaptureService } from '../services/AudioCaptureService';
 
 interface LiveVisualizerProps {
   isRecording: boolean;
-  audioManagerRef: React.RefObject<AudioStreamManager | null>;
+  audioCaptureRef?: React.RefObject<AudioCaptureService | null>;
+  audioManagerRef?: React.RefObject<any>; // For backward compatibility
 }
 
-export const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ isRecording, audioManagerRef }) => {
+export const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ isRecording, audioCaptureRef, audioManagerRef }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -25,8 +26,18 @@ export const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ isRecording, aud
 
       ctx.clearRect(0, 0, width, height);
 
-      if (isRecording && audioManagerRef.current) {
-        audioManagerRef.current.getFrequencyData(frequencyData);
+      if (isRecording) {
+        if (audioCaptureRef?.current) {
+          // Check system frequency first, then microphone
+          audioCaptureRef.current.getFrequencyData('system', frequencyData);
+          let sum = 0;
+          for (let i = 0; i < 32; i++) sum += frequencyData[i];
+          if (sum === 0) {
+            audioCaptureRef.current.getFrequencyData('microphone', frequencyData);
+          }
+        } else if (audioManagerRef?.current) {
+          audioManagerRef.current.getFrequencyData(frequencyData);
+        }
       } else {
         // Idle ambient wave state
         const time = Date.now() * 0.003;
@@ -44,7 +55,7 @@ export const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ isRecording, aud
         const x = i * (barWidth + 2);
         const y = (height - barHeight) / 2;
 
-        // Gradient styling
+        // Gradient styling: Emerald -> Indigo -> Purple
         const gradient = ctx.createLinearGradient(0, y, 0, y + barHeight);
         if (isRecording) {
           gradient.addColorStop(0, '#10b981'); // Emerald 500
@@ -73,7 +84,7 @@ export const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ isRecording, aud
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [isRecording, audioManagerRef]);
+  }, [isRecording, audioCaptureRef, audioManagerRef]);
 
   return (
     <div className="w-full h-12 bg-slate-50 dark:bg-slate-900/50 rounded-lg p-1.5 flex items-center justify-center border border-slate-200/80 dark:border-slate-800">

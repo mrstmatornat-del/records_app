@@ -1,4 +1,4 @@
-import { SessionAnalysis } from '../types';
+import { SessionAnalysis, ActionItem, DecisionItem, ImportantPoint, RiskItem } from '../types';
 
 /**
  * Lightweight Client-Side NLP Summarizer & Topic Extractor
@@ -9,9 +9,16 @@ export function generateLocalSummary(transcriptText: string, durationSeconds: nu
   if (!cleanText) {
     return {
       title: 'Bản ghi âm trống',
+      objective: 'Không có mục tiêu được cung cấp',
+      executiveSummary: 'Không tìm thấy nội dung hội thoại.',
       summary: 'Không tìm thấy nội dung hội thoại.',
-      keyTopics: [],
+      decisions: [],
       actionItems: [],
+      importantPoints: [],
+      risks: [],
+      openQuestions: [],
+      followUps: [],
+      keyTopics: [],
       keyTakeaways: [],
       sentiment: 'Trung tính',
       wordCount: 0,
@@ -56,14 +63,13 @@ export function generateLocalSummary(transcriptText: string, durationSeconds: nu
     sWords.forEach((w) => {
       if (freqMap[w]) score += freqMap[w];
     });
-    // Boost earlier sentences slightly
     const positionBoost = idx === 0 ? 1.3 : (1 - idx / rawSentences.length * 0.2);
     return { sentence, score: score * positionBoost, idx };
   });
 
   sentenceScores.sort((a, b) => b.score - a.score);
 
-  // Take top 3-4 sentences for summary and maintain order
+  // Take top 3-4 sentences for summary
   const topSentences = sentenceScores
     .slice(0, Math.min(4, rawSentences.length))
     .sort((a, b) => a.idx - b.idx)
@@ -73,42 +79,61 @@ export function generateLocalSummary(transcriptText: string, durationSeconds: nu
     ? topSentences.join(' ') 
     : cleanText.slice(0, 250) + '...';
 
-  // Extract Action Items (sentences with actionable verbs or task keywords)
+  // Decisions
+  const decisions: DecisionItem[] = topSentences.slice(0, 2).map((s, idx) => ({
+    decision: s,
+    context: `Consensus point ${idx + 1}`,
+    timestamp: Math.round((durationSeconds / Math.max(1, topSentences.length)) * idx),
+  }));
+
+  // Extract Action Items
   const actionKeywords = /need to|should|will|must|let's|plan|project|task|follow up|cần|sẽ|phải|làm|thực hiện|hoàn thành|kiểm tra|chuẩn bị/i;
-  const actionItems = rawSentences
-    .filter((s) => actionKeywords.test(s))
-    .slice(0, 4);
+  const actionStrings = rawSentences.filter((s) => actionKeywords.test(s)).slice(0, 4);
 
-  if (actionItems.length === 0 && rawSentences.length > 1) {
-    actionItems.push(rawSentences[rawSentences.length - 1]);
-  }
+  const actionItems: ActionItem[] = actionStrings.map((s, idx) => ({
+    task: s,
+    owner: "Not specified",
+    deadline: "Not specified",
+    priority: "medium",
+    timestamp: Math.round((durationSeconds / Math.max(1, actionStrings.length)) * idx),
+  }));
 
-  // Group top keywords into Key Topics
-  const keyTopics = sortedKeywords.slice(0, 3).map((kw) => {
-    const matchingSentences = rawSentences
-      .filter((s) => s.toLowerCase().includes(kw))
-      .slice(0, 2);
-
+  // Group top keywords into Key Topics & Important Points
+  const importantPoints: ImportantPoint[] = sortedKeywords.slice(0, 3).map((kw, idx) => {
+    const matchingSentences = rawSentences.filter((s) => s.toLowerCase().includes(kw)).slice(0, 2);
     return {
-      topic: kw.charAt(0).toUpperCase() + kw.slice(1),
-      details: matchingSentences.length > 0 
-        ? matchingSentences 
-        : [`Nội dung liên quan đến "${kw}" trong đoạn hội thoại.`],
+      topic: kw.charAt(0).toUpperCase() + kw.slice(1) + " Subject",
+      detail: matchingSentences.length > 0 ? matchingSentences.join(' ') : `Discussion regarding "${kw}".`,
+      timestamp: Math.round((durationSeconds / 3) * idx),
     };
   });
 
-  // Key Takeaways
+  const risks: RiskItem[] = [
+    {
+      risk: "Local offline extraction without cloud reasoning.",
+      impact: "Simpler heuristic synthesis.",
+      suggestedFollowUp: "Re-run analysis with Gemini when connection is available.",
+    },
+  ];
+
+  const keyTopics = importantPoints.map((p) => ({ topic: p.topic, details: [p.detail] }));
   const keyTakeaways = topSentences.slice(0, 3);
 
-  // Simple title generation
   const mainKw = sortedKeywords[0] ? (sortedKeywords[0].charAt(0).toUpperCase() + sortedKeywords[0].slice(1)) : 'Cuộc họp';
-  const title = `Tóm tắt: Nộị dung về ${mainKw}`;
+  const title = `Tóm tắt: Nội dung về ${mainKw}`;
 
   return {
     title,
+    objective: "Local meeting notes extraction",
+    executiveSummary: summary,
     summary,
-    keyTopics,
+    decisions,
     actionItems,
+    importantPoints,
+    risks,
+    openQuestions: ["Có điểm nào cần thảo luận thêm không?"],
+    followUps: ["Chia sẻ biên bản cuộc họp với các thành viên."],
+    keyTopics,
     keyTakeaways,
     sentiment: wordCount > 100 ? 'Phân tích & Thảo luận' : 'Trao đổi ngắn',
     wordCount,

@@ -4,15 +4,26 @@ import { AudioControls } from './components/AudioControls';
 import { LiveVisualizer } from './components/LiveVisualizer';
 import { LiveTranscript } from './components/LiveTranscript';
 import { AINotesPanel } from './components/AINotesPanel';
+import { AudioPlayerBar } from './components/AudioPlayerBar';
+import { MeetingSetupModal } from './components/MeetingSetupModal';
 import { ExtensionPopupMockup } from './components/ExtensionPopupMockup';
 import { SessionHistoryModal } from './components/SessionHistoryModal';
 import { LocalModelSettingsModal } from './components/LocalModelSettingsModal';
-import { AudioSession, AudioSourceType, STTLanguage, TranscriptSegment, SessionAnalysis } from './types';
-import { AudioStreamManager } from './utils/audioStreamer';
-import { generateLocalSummary } from './utils/localSummarizer';
+import {
+  AudioSession,
+  AudioSourceType,
+  STTLanguage,
+  TranscriptSegment,
+  SessionAnalysis,
+  MeetingContext,
+  AudioLevels,
+} from './types';
+import { AudioCaptureService } from './services/AudioCaptureService';
+import { LocalSTTService } from './services/LocalSTTService';
+import { transcriptEventBus } from './services/TranscriptEventBus';
 import { LocalEngineConfig, DEFAULT_LOCAL_CONFIG, generateLocalFastAnalysis } from './utils/localModelEngine';
 import { DEMO_SESSIONS } from './data/demoSessions';
-import { Sparkles, Radio, HelpCircle, ArrowRight, ShieldCheck, Cpu } from 'lucide-react';
+import { Sparkles, Radio, ShieldCheck, Cpu } from 'lucide-react';
 
 export default function App() {
   const [sessions, setSessions] = useState<AudioSession[]>(() => {
@@ -32,21 +43,44 @@ export default function App() {
       return DEFAULT_LOCAL_CONFIG;
     }
   });
+
+  const [meetingContext, setMeetingContext] = useState<MeetingContext>({
+    title: 'Windows Meeting Architecture & Intelligence Sync',
+    objective: 'Understand reconciliation issues and agree on zero-distortion Windows meeting audio capture.',
+    expectedOutcome: 'Sign-off on WASAPI loopback capture, local VAD 16kHz PCM, and timestamp-linked Notion AI notes.',
+    watchList: [
+      'unresolved technical issues',
+      'owners',
+      'deadlines',
+      'decisions',
+      'risks',
+      'data quality problems',
+    ],
+  });
+
   const [isModelModalOpen, setIsModelModalOpen] = useState(false);
+  const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   const [currentSession, setCurrentSession] = useState<AudioSession | null>(DEMO_SESSIONS[0]);
   const [transcript, setTranscript] = useState<TranscriptSegment[]>(DEMO_SESSIONS[0].transcript);
   const [isRecording, setIsRecording] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [audioSource, setAudioSource] = useState<AudioSourceType>('mic');
+  const [audioSource, setAudioSource] = useState<AudioSourceType>('dual');
   const [sttLanguage, setSttLanguage] = useState<STTLanguage>('en-US');
-  const [micVolume, setMicVolume] = useState<number>(0);
+  const [audioLevels, setAudioLevels] = useState<AudioLevels>({ micLevel: 0, systemLevel: 0 });
   const [durationSeconds, setDurationSeconds] = useState(DEMO_SESSIONS[0].durationSeconds);
   const [viewMode, setViewMode] = useState<'workspace' | 'extension'>('workspace');
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const audioManagerRef = useRef<AudioStreamManager | null>(null);
+  // Audio Playback & Timestamp Navigation State
+  const [audioUrl, setAudioUrl] = useState<string | undefined>(undefined);
+  const [seekTimestamp, setSeekTimestamp] = useState<number | undefined>(undefined);
+  const [activePlaybackTime, setActivePlaybackTime] = useState<number>(-1);
+
+  const audioCaptureRef = useRef<AudioCaptureService | null>(null);
+  const sttServiceRef = useRef<LocalSTTService | null>(null);
   const timerRef = useRef<any>(null);
 
   // Save engineConfig to localStorage
@@ -58,23 +92,6 @@ export default function App() {
     }
   }, [engineConfig]);
 
-  // Initialize AudioStreamManager
-  useEffect(() => {
-    audioManagerRef.current = new AudioStreamManager();
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (audioManagerRef.current) audioManagerRef.current.stopStream();
-    };
-  }, []);
-
-  // Update STT language dynamically
-  useEffect(() => {
-    if (audioManagerRef.current) {
-      audioManagerRef.current.setLanguage(sttLanguage);
-    }
-  }, [sttLanguage]);
-
   // Save sessions to localStorage
   useEffect(() => {
     try {
@@ -84,6 +101,77 @@ export default function App() {
     }
   }, [sessions]);
 
+  // Initialize AudioCaptureService and LocalSTTService
+  useEffect(() => {
+    audioCaptureRef.current = new AudioCaptureService();
+    sttServiceRef.current = new LocalSTTService({ language: sttLanguage });
+
+    // Connect Audio Levels to state
+    const unsubLevels = audioCaptureRef.current.onLevelsChange((levels) => {
+      setAudioLevels(levels);
+      transcriptEventBus.emitLevels(levels);
+    });
+
+    // Connect Audio Error
+    const unsubErr = audioCaptureRef.current.onError((err) => {
+      setErrorMessage(err);
+    });
+
+    // Connect EventBus partial transcript
+    const unsubPartial = transcriptEventBus.onPartialSegment((segment) => {
+      setTranscript((prev) => {
+        const existingIdx = prev.findIndex((s) => s.id === segment.id);
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = segment;
+          return updated;
+        } else {
+          return [...prev, segment];
+        }
+      });
+    });
+
+    // Connect EventBus final transcript
+    const unsubFinal = transcriptEventBus.onFinalSegment((segment) => {
+      setTranscript((prev) => {
+        const existingIdx = prev.findIndex((s) => s.id === segment.id);
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = segment;
+          return updated;
+        } else {
+          return [...prev, segment];
+        }
+      });
+    });
+
+    // Stream PCM audio frames from AudioCaptureService to LocalSTTService
+    const unsubFrames = audioCaptureRef.current.onAudioFrame((source, pcm16) => {
+      if (sttServiceRef.current) {
+        const elapsed = durationSeconds;
+        sttServiceRef.current.pushAudioFrame(source, pcm16, elapsed);
+      }
+    });
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      unsubLevels();
+      unsubErr();
+      unsubPartial();
+      unsubFinal();
+      unsubFrames();
+      if (audioCaptureRef.current) audioCaptureRef.current.stop();
+      if (sttServiceRef.current) sttServiceRef.current.stop();
+    };
+  }, []);
+
+  // Update STT language dynamically
+  useEffect(() => {
+    if (sttServiceRef.current) {
+      sttServiceRef.current.setLanguage(sttLanguage);
+    }
+  }, [sttLanguage]);
+
   // Handle START Streaming Audio
   const handleStartRecording = async () => {
     setErrorMessage(null);
@@ -91,7 +179,8 @@ export default function App() {
 
     const newSession: AudioSession = {
       id: newSessionId,
-      title: `Live Audio Session (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+      title: meetingContext.title || `Meeting Session (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+      context: meetingContext,
       createdAt: new Date().toISOString(),
       durationSeconds: 0,
       transcript: [],
@@ -103,7 +192,10 @@ export default function App() {
     setTranscript([]);
     setDurationSeconds(0);
     setIsRecording(true);
-    setMicVolume(0);
+    setIsPaused(false);
+    setAudioLevels({ micLevel: 0, systemLevel: 0 });
+    setAudioUrl(undefined);
+    transcriptEventBus.clear();
 
     // Timer interval
     if (timerRef.current) clearInterval(timerRef.current);
@@ -112,181 +204,104 @@ export default function App() {
     }, 1000);
 
     try {
-      if (audioManagerRef.current) {
-        await audioManagerRef.current.startStream(
-          audioSource === 'demo' ? 'mic' : (audioSource as 'mic' | 'tab' | 'combined' | 'file'),
-          sttLanguage,
-          (segment) => {
-            setTranscript((prev) => {
-              const existingIdx = prev.findIndex((s) => s.id === segment.id);
-              if (existingIdx >= 0) {
-                const updated = [...prev];
-                updated[existingIdx] = segment;
-                return updated;
-              } else {
-                return [...prev, segment];
-              }
-            });
-          },
-          (err) => {
-            setErrorMessage(err);
-          },
-          (vol) => {
-            setMicVolume(vol);
-          },
-          async (base64Slice, mime, elapsedSec) => {
-            // Real-time incremental slice transcription for browser tab / device audio (Interviewer/Meeting voice)
-            try {
-              const transRes = await fetch('/api/transcribe-audio', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  audioBase64: base64Slice,
-                  mimeType: mime,
-                  targetLanguage: sttLanguage === 'vi-VN' ? 'vi' : 'en',
-                }),
-              });
-              if (transRes.ok) {
-                const transData = await transRes.json();
-                if (transData.transcript && transData.transcript.trim().length > 0) {
-                  const text = transData.transcript.trim();
-                  const speakerName =
-                    audioSource === 'combined'
-                      ? 'Interview (Mic + Tab)'
-                      : audioSource === 'tab'
-                      ? 'Interviewer (Browser Tab)'
-                      : 'Live Speaker (Mic)';
-                  const liveSeg: TranscriptSegment = {
-                    id: `live-tab-slice-${Date.now()}`,
-                    timestamp: elapsedSec,
-                    text,
-                    isFinal: true,
-                    speaker: speakerName,
-                  };
-                  setTranscript((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last && last.text === text) return prev;
-                    return [...prev, liveSeg];
-                  });
-                }
-              } else {
-                const errJson = await transRes.json().catch(() => ({}));
-                if (errJson.error && errJson.error.includes("429")) {
-                  console.warn("Live slice rate limit warning:", errJson.error);
-                }
-              }
-            } catch (sliceErr) {
-              console.warn("Live audio slice transcription error:", sliceErr);
-            }
-          }
-        );
+      if (audioCaptureRef.current && sttServiceRef.current) {
+        sttServiceRef.current.start();
+        await audioCaptureRef.current.start({
+          source: audioSource,
+        });
       }
     } catch (err: any) {
       setIsRecording(false);
+      setIsPaused(false);
       if (timerRef.current) clearInterval(timerRef.current);
-      setErrorMessage(err.message || "Could not start audio stream.");
+      setErrorMessage(err.message || 'Could not start audio capture.');
     }
   };
 
-  // Handle END Streaming Audio & AI Session Analysis
+  const handlePauseRecording = () => {
+    if (!isRecording) return;
+    setIsPaused(true);
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (audioCaptureRef.current) audioCaptureRef.current.pause();
+  };
+
+  const handleResumeRecording = () => {
+    if (!isRecording) return;
+    setIsPaused(false);
+    timerRef.current = setInterval(() => {
+      setDurationSeconds((prev) => prev + 1);
+    }, 1000);
+    if (audioCaptureRef.current) audioCaptureRef.current.resume();
+  };
+
+  // Handle STOP Meeting Recording & Post-Meeting Gemini Reasoning
   const handleEndRecording = async () => {
     if (timerRef.current) clearInterval(timerRef.current);
     setIsRecording(false);
-    setMicVolume(0);
+    setIsPaused(false);
+    setAudioLevels({ micLevel: 0, systemLevel: 0 });
 
     let finalDuration = durationSeconds;
-    let audioBase64: string | undefined;
-    let mimeType = 'audio/webm';
+    let recordedAudioUrl: string | undefined;
 
-    if (audioManagerRef.current) {
-      const result = await audioManagerRef.current.stopStream();
-      if (result.durationSeconds > 0) finalDuration = Math.round(result.durationSeconds);
-      audioBase64 = result.audioBase64;
-      mimeType = result.mimeType || 'audio/webm';
+    if (sttServiceRef.current) {
+      sttServiceRef.current.stop();
     }
 
-    let activeTranscript = [...transcript];
-
-    // For Tab capture or when live Speech Recognition captured little/nothing, transcribe the recorded audio stream via Gemini Multimodal Audio API
-    if (audioBase64 && (audioSource === 'tab' || activeTranscript.length === 0)) {
-      setIsAnalyzing(true);
-      try {
-        const transRes = await fetch('/api/transcribe-audio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            audioBase64,
-            mimeType,
-            targetLanguage: sttLanguage === 'vi-VN' ? 'vi' : 'en',
-          }),
-        });
-
-        const transData = await transRes.json();
-
-        if (transRes.ok && transData.transcript && transData.transcript.trim().length > 0) {
-          const rawText = transData.transcript.trim();
-          // Split into clean sentence segments
-          const sentences = rawText.split(/(?<=[.?!])\s+/).filter((s: string) => s.trim().length > 0);
-          
-          const aiSegments: TranscriptSegment[] = sentences.map((sentence: string, idx: number) => ({
-            id: `ai-transcribed-${Date.now()}-${idx}`,
-            timestamp: Math.round((finalDuration / Math.max(1, sentences.length)) * idx),
-            text: sentence.trim(),
-            isFinal: true,
-            speaker: audioSource === 'tab' ? 'Browser Tab Speaker' : 'Recorded Speaker',
-          }));
-
-          activeTranscript = aiSegments.length > 0 ? aiSegments : [{
-            id: `ai-transcribed-${Date.now()}`,
-            timestamp: 0,
-            text: rawText,
-            isFinal: true,
-            speaker: 'Recorded Speaker',
-          }];
-
-          setTranscript(activeTranscript);
-        }
-      } catch (transErr) {
-        console.warn("Gemini audio transcription fallback error:", transErr);
-      } finally {
-        setIsAnalyzing(false);
-      }
+    if (audioCaptureRef.current) {
+      const recResult = await audioCaptureRef.current.stop();
+      if (recResult.durationSeconds > 0) finalDuration = recResult.durationSeconds;
+      recordedAudioUrl = recResult.audioUrl;
+      setAudioUrl(recordedAudioUrl);
     }
 
-    // Trigger AI Analysis via Gemini server endpoint
-    await analyzeTranscript(activeTranscript, finalDuration);
+    const currentTranscript = transcriptEventBus.getSegments().length > 0
+      ? transcriptEventBus.getSegments()
+      : transcript;
+
+    // Trigger structured AI Analysis
+    await analyzeTranscript(currentTranscript, finalDuration, recordedAudioUrl);
   };
 
-  // Call AI server /api/analyze-session endpoint or Local Fast Offline engine
-  const analyzeTranscript = async (currentSegments: TranscriptSegment[], durationSec: number) => {
-    const fullText = currentSegments.map((s) => s.text).join(' ');
-
-    if (!fullText || fullText.trim().length === 0) {
-      setErrorMessage("Chưa có văn bản thu âm nào được ghi lại.");
+  // Analyze session transcript via Gemini post-meeting reasoning or Local Offline engine
+  const analyzeTranscript = async (
+    currentSegments: TranscriptSegment[],
+    durationSec: number,
+    recordedAudioUrl?: string
+  ) => {
+    if (currentSegments.length === 0) {
+      setErrorMessage('Chưa có nội dung cuộc họp nào được ghi lại.');
       return;
     }
+
+    // Format structured dialogue string with timestamps and speaker attribution
+    const formattedTranscript = currentSegments
+      .map((s) => `[${formatTimestamp(s.startTime || s.timestamp)}] [${s.speaker || (s.source === 'microphone' ? 'Me' : 'Meeting')}]: ${s.text}`)
+      .join('\n');
 
     setIsAnalyzing(true);
     setErrorMessage(null);
 
-    // If user selected Local Fast (Offline Light Mode) for Bronze machines
+    // If user selected Local Fast (Offline Light Mode)
     if (engineConfig.engineType === 'local-fast') {
       setTimeout(() => {
-        const localAnalysis = generateLocalFastAnalysis(fullText, durationSec);
+        const localAnalysis = generateLocalFastAnalysis(currentSegments, durationSec, meetingContext.objective);
         const fastSession: AudioSession = {
           id: currentSession?.id || `session-${Date.now()}`,
-          title: localAnalysis.title || 'Live Audio Session',
+          title: localAnalysis.title || meetingContext.title || 'Meeting Session',
+          context: meetingContext,
           createdAt: currentSession?.createdAt || new Date().toISOString(),
           durationSeconds: durationSec,
           transcript: currentSegments,
           analysis: localAnalysis,
           audioSource,
           status: 'completed',
+          audioBlobUrl: recordedAudioUrl,
         };
         setCurrentSession(fastSession);
         setSessions((prev) => [fastSession, ...prev.filter((s) => s.id !== fastSession.id)]);
         setIsAnalyzing(false);
-      }, 100);
+      }, 150);
       return;
     }
 
@@ -295,8 +310,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcript: fullText,
+          transcript: formattedTranscript,
           durationSeconds: durationSec,
+          meetingContext,
           engineType: engineConfig.engineType,
           ollamaUrl: engineConfig.ollamaUrl,
           ollamaModel: engineConfig.ollamaModel,
@@ -306,71 +322,68 @@ export default function App() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to analyze audio session.');
+        throw new Error(data.error || 'Failed to analyze meeting session.');
       }
 
       const analysis: SessionAnalysis = data;
 
       const completedSession: AudioSession = {
         id: currentSession?.id || `session-${Date.now()}`,
-        title: analysis.title || 'Live Audio Session',
+        title: analysis.title || meetingContext.title || 'Meeting Session',
+        context: meetingContext,
         createdAt: currentSession?.createdAt || new Date().toISOString(),
         durationSeconds: durationSec,
         transcript: currentSegments,
         analysis,
         audioSource,
         status: 'completed',
+        audioBlobUrl: recordedAudioUrl,
       };
 
       setCurrentSession(completedSession);
       setSessions((prev) => [completedSession, ...prev.filter((s) => s.id !== completedSession.id)]);
     } catch (err: any) {
-      console.warn("AI API error, falling back to Local Fast Offline NLP engine:", err);
-      
-      // Fallback: Use client-side Local Fast NLP summarizer (100% Free & Unlimited)
-      const localAnalysis = generateLocalFastAnalysis(fullText, durationSec);
-      
+      console.warn('AI API error, gracefully degrading to Local Fast Offline NLP engine:', err);
+
+      // Graceful degradation: Run client-side local NLP summarizer
+      const localAnalysis = generateLocalFastAnalysis(currentSegments, durationSec, meetingContext.objective);
+
       const fallbackSession: AudioSession = {
         id: currentSession?.id || `session-${Date.now()}`,
-        title: localAnalysis.title || 'Tóm tắt nhanh (Offline Fast)',
+        title: localAnalysis.title || meetingContext.title || 'Meeting Session (Local Notes)',
+        context: meetingContext,
         createdAt: currentSession?.createdAt || new Date().toISOString(),
         durationSeconds: durationSec,
         transcript: currentSegments,
         analysis: localAnalysis,
         audioSource,
         status: 'completed',
+        audioBlobUrl: recordedAudioUrl,
       };
 
       setCurrentSession(fallbackSession);
       setSessions((prev) => [fallbackSession, ...prev.filter((s) => s.id !== fallbackSession.id)]);
-      
-      setErrorMessage("⚡ Đã tự động dùng Tóm tắt Offline Miễn phí (Zero Latency) do máy chạy chế độ nhẹ!");
+      setErrorMessage('⚡ Đã tự động kích hoạt Tóm tắt Offline Miễn phí (Zero Latency) do máy chạy chế độ nhẹ hoặc API giới hạn!');
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // Simulate text injection into stream
-  const handleSimulateSpeech = (text: string) => {
-    if (!isRecording) return;
-
-    const newSeg: TranscriptSegment = {
-      id: `sim-${Date.now()}`,
-      timestamp: durationSeconds,
-      text,
-      isFinal: true,
-      speaker: 'Speaker',
-    };
-
-    setTranscript((prev) => [...prev, newSeg]);
+  // Timestamp jumping handler: jumps playback and highlights transcript
+  const handleSeekTimestamp = (sec: number) => {
+    setSeekTimestamp(sec);
+    setActivePlaybackTime(sec);
   };
 
-  // Load a demo session
   const handleLoadDemoSession = (demoSession = DEMO_SESSIONS[0]) => {
     setCurrentSession(demoSession);
     setTranscript(demoSession.transcript);
     setDurationSeconds(demoSession.durationSeconds);
     setAudioSource(demoSession.audioSource);
+    if (demoSession.context) {
+      setMeetingContext(demoSession.context);
+    }
+    setAudioUrl(undefined);
     setErrorMessage(null);
   };
 
@@ -381,6 +394,12 @@ export default function App() {
       setTranscript([]);
     }
   };
+
+  function formatTimestamp(sec: number) {
+    const mins = Math.floor(sec / 60);
+    const secs = Math.floor(sec % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  }
 
   const fullTextString = transcript.map((s) => s.text).join(' ');
 
@@ -430,81 +449,110 @@ export default function App() {
             {/* Audio Controls Bar */}
             <AudioControls
               isRecording={isRecording}
+              isPaused={isPaused}
               isAnalyzing={isAnalyzing}
               audioSource={audioSource}
               setAudioSource={setAudioSource}
               sttLanguage={sttLanguage}
               setSttLanguage={setSttLanguage}
               onStart={handleStartRecording}
+              onPause={handlePauseRecording}
+              onResume={handleResumeRecording}
               onEnd={handleEndRecording}
-              onSimulateSpeech={handleSimulateSpeech}
               durationSeconds={durationSeconds}
               errorMessage={errorMessage}
-              micVolume={micVolume}
+              audioLevels={audioLevels}
+              onOpenMeetingSetup={() => setIsSetupModalOpen(true)}
+              meetingContext={meetingContext}
             />
+
+            {/* Audio Player Bar (Shown when recording finishes or audio is available) */}
+            {audioUrl && (
+              <AudioPlayerBar
+                audioUrl={audioUrl}
+                durationSeconds={durationSeconds}
+                seekTimestamp={seekTimestamp}
+                onTimeUpdate={(cur) => setActivePlaybackTime(cur)}
+              />
+            )}
 
             {/* Visualizer Bar */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
               <div className="flex items-center gap-3 w-full sm:w-auto">
                 <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400">
-                  <Radio className={`w-5 h-5 ${isRecording ? 'animate-pulse' : ''}`} />
+                  <Radio className={`w-5 h-5 ${isRecording && !isPaused ? 'animate-pulse' : ''}`} />
                 </div>
                 <div>
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                    Audio Frequency Spectrum
+                    Dual Audio Frequency Spectrum
                   </h4>
                   <p className="text-[11px] text-slate-500">
-                    {isRecording ? 'Capturing live audio stream' : 'Visualizer ready'}
+                    {isRecording ? (isPaused ? 'Recording paused' : 'Capturing live dual-stream audio') : 'Visualizer ready'}
                   </p>
                 </div>
               </div>
               <div className="w-full sm:w-80">
-                <LiveVisualizer isRecording={isRecording} audioManagerRef={audioManagerRef} />
+                <LiveVisualizer isRecording={isRecording && !isPaused} audioCaptureRef={audioCaptureRef} />
               </div>
             </div>
 
             {/* Split Grid: Left = Live Transcript (STT), Right = AI Notes & Analysis */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Requirement #1: Real-time English Speech-to-Text */}
+              {/* Left Column: Live Transcript with [Me] and [Meeting] sources & clickable timestamps */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-indigo-500" />
-                    1. Real-Time English STT Stream
+                    1. Real-Time Dual-Source Transcript
                   </h3>
-                  <span className="text-[11px] text-slate-400">English (en-US)</span>
+                  <span className="text-[11px] text-slate-400">
+                    [Me: Mic] &bull; [Meeting: Loopback]
+                  </span>
                 </div>
                 <LiveTranscript
                   transcript={transcript}
                   isRecording={isRecording}
                   onClear={() => setTranscript([])}
                   audioSource={audioSource}
+                  onSeekTimestamp={handleSeekTimestamp}
+                  activeTimestamp={activePlaybackTime}
                 />
               </div>
 
-              {/* Requirement #2: Automated AI Session Notes & Content Analysis */}
+              {/* Right Column: AI Meeting Notes (Notion AI Architecture) */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
                     <Sparkles className="w-3.5 h-3.5 text-purple-500" />
-                    2. AI Automated Notes & Analysis
+                    2. AI Meeting Intelligence Notes
                   </h3>
                   <span className="text-[11px] text-purple-600 dark:text-purple-400 font-medium">
-                    Powered by Gemini 3.6 Flash
+                    Notion AI Assistant
                   </span>
                 </div>
                 <AINotesPanel
                   analysis={currentSession?.analysis || null}
                   isAnalyzing={isAnalyzing}
                   transcriptText={fullTextString}
-                  onReAnalyze={() => analyzeTranscript(transcript, durationSeconds)}
+                  onReAnalyze={() => analyzeTranscript(transcript, durationSeconds, audioUrl)}
                   engineConfig={engineConfig}
+                  onSeekTimestamp={handleSeekTimestamp}
                 />
               </div>
             </div>
           </div>
         )}
       </main>
+
+      {/* Meeting Setup Modal */}
+      <MeetingSetupModal
+        isOpen={isSetupModalOpen}
+        onClose={() => setIsSetupModalOpen(false)}
+        context={meetingContext}
+        onSaveContext={(newCtx) => setMeetingContext(newCtx)}
+        sttLanguage={sttLanguage}
+        setSttLanguage={setSttLanguage}
+      />
 
       {/* Session History Modal */}
       <SessionHistoryModal

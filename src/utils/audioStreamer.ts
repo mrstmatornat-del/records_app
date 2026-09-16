@@ -132,9 +132,7 @@ export class AudioStreamManager {
         if (tabStream && tabStream.getAudioTracks().length > 0) {
           const tabNode = this.audioContext.createMediaStreamSource(tabStream);
           tabNode.connect(dest);
-          try {
-            tabNode.connect(this.audioContext.destination); // Speaker out so user hears interviewer
-          } catch (e) {}
+          // ZERO ECHO: Do NOT connect to audioContext.destination (speakers)
         }
 
         if (micStream && micStream.getAudioTracks().length > 0) {
@@ -156,14 +154,7 @@ export class AudioStreamManager {
         this.analyser.fftSize = 64;
         sourceNode.connect(this.analyser);
 
-        // For browser tab capture, route audio to speakers so user can hear the meeting/interview
-        if (source === 'tab') {
-          try {
-            sourceNode.connect(this.audioContext.destination);
-          } catch (destErr) {
-            console.warn("Could not connect tab audio to destination speakers:", destErr);
-          }
-        }
+        // Zero-echo passive tap: never route captured stream to speakers
 
         // Track audio input volume level
         if (this.onVolumeChange) {
@@ -279,10 +270,14 @@ export class AudioStreamManager {
             const segId = `seg-${this.sessionTag}-${this.totalFinalSegments + i}`;
             const segment: TranscriptSegment = {
               id: segId,
+              startTime: Math.max(0, Math.round(elapsedSeconds - 2)),
+              endTime: Math.round(elapsedSeconds),
               timestamp: Math.round(elapsedSeconds),
               text: transcriptText.trim(),
+              source: 'microphone',
+              speaker: 'Me',
+              confidence: 0.95,
               isFinal,
-              speaker: 'Speaker',
             };
 
             if (isFinal && i > highestIndexInBatch) {
