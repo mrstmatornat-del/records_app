@@ -1,0 +1,6 @@
+{
+  "name": "Live Audio Transcriber & AI Note Taker",
+  "description": "Real-time browser & microphone audio transcription in English with AI automated note taking and content analysis powered by Gemini.",
+  "requestFramePermissions": ["microphone", "display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
