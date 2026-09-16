@@ -162,7 +162,12 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
           <span>&bull;</span>
 
           {/* State 2, 3, 4: STT Engine Status */}
-          {sttStatus?.status === 'processing' ? (
+          {sttStatus?.status === 'loading' ? (
+            <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-medium" title="First run only: downloads the local Whisper model, then it's cached and works fully offline.">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Downloading local speech model (one-time)...</span>
+            </span>
+          ) : sttStatus?.status === 'processing' ? (
             <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-medium">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               <span>STT Processing speech utterance...</span>
@@ -170,7 +175,7 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
           ) : sttStatus?.status === 'unavailable' || sttStatus?.errorCode === 'SYSTEM_STT_UNAVAILABLE' ? (
             <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold" title={sttStatus.message || ''}>
               <AlertCircle className="w-3.5 h-3.5" />
-              <span>STT: SYSTEM_STT_UNAVAILABLE (Audio is recorded safely)</span>
+              <span>Local STT unavailable (Audio is still recorded safely)</span>
             </span>
           ) : sttStatus?.status === 'completed' ? (
             <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">

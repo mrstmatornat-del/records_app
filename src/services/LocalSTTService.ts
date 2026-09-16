@@ -4,7 +4,7 @@ import { detectHardwareCapabilities, HardwareProfile } from '../utils/hardwareDe
 import { transcriptEventBus } from './TranscriptEventBus';
 import { transcriptReconciler } from './TranscriptReconciler';
 import { ISTTEngine, STTModelSize, STTEngineStatus } from './stt/ISTTEngine';
-import { localWhisperEngine } from './stt/LocalWhisperEngine';
+import { browserWhisperEngine } from './stt/BrowserWhisperEngine';
 
 export interface STTServiceConfig {
   language: STTLanguage;
@@ -55,9 +55,12 @@ export class LocalSTTService {
       ...config,
     };
 
-    this.sttEngine = sttEngine || localWhisperEngine;
+    this.sttEngine = sttEngine || browserWhisperEngine;
     this.micVAD = new VoiceActivityDetector({ energyThreshold: 0.012 });
-    this.systemVAD = new VoiceActivityDetector({ energyThreshold: 0.015 });
+    // System/tab audio (YouTube, Teams, Zoom) commonly arrives quieter and more
+    // normalized than a close-talking mic, so it needs a lower trigger threshold
+    // or speech gets silently dropped before it ever reaches STT.
+    this.systemVAD = new VoiceActivityDetector({ energyThreshold: 0.008 });
   }
 
   public getSTTEngine(): ISTTEngine {
@@ -96,7 +99,7 @@ export class LocalSTTService {
   public async start(): Promise<void> {
     this.isRunning = true;
     this.micVAD = new VoiceActivityDetector({ energyThreshold: 0.012 });
-    this.systemVAD = new VoiceActivityDetector({ energyThreshold: 0.015 });
+    this.systemVAD = new VoiceActivityDetector({ energyThreshold: 0.008 });
     this.systemTranscriptionQueue = [];
     this.isTranscribingSystem = false;
 

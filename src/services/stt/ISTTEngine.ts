@@ -27,6 +27,7 @@ export interface STTTranscriptionResult {
 
 export type STTEngineStatus =
   | 'uninitialized'
+  | 'loading'
   | 'ready'
   | 'processing'
   | 'completed'
