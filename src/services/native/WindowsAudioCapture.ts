@@ -43,6 +43,7 @@ export interface INativeAudioCaptureAdapter {
 export class WindowsAudioCaptureAdapter implements INativeAudioCaptureAdapter {
   private isLoopbackActive = false;
   private isMicActive = false;
+  private unsubscribeLoopbackChunk: (() => void) | null = null;
 
   public isSupported(): boolean {
     if (typeof window === 'undefined') return false;
@@ -74,6 +75,14 @@ export class WindowsAudioCaptureAdapter implements INativeAudioCaptureAdapter {
   }
 
   public async getAudioDevices(): Promise<NativeAudioDeviceInfo[]> {
+    if (typeof window !== 'undefined' && (window as any).__STREAMNOTE_ELECTRON__?.getAudioDevices) {
+      try {
+        return await (window as any).__STREAMNOTE_ELECTRON__.getAudioDevices();
+      } catch (err) {
+        console.warn('Electron getAudioDevices failed:', err);
+      }
+    }
+
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.enumerateDevices) {
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
@@ -87,6 +96,7 @@ export class WindowsAudioCaptureAdapter implements INativeAudioCaptureAdapter {
         console.warn("enumerateDevices failed:", e);
       }
     }
+
     return [
       { id: 'default-output', name: 'Default Windows Audio Output (Speakers / Headphones)', type: 'render', isDefault: true },
       { id: 'default-input', name: 'Default Windows Microphone Input', type: 'capture', isDefault: true },
@@ -94,11 +104,20 @@ export class WindowsAudioCaptureAdapter implements INativeAudioCaptureAdapter {
   }
 
   public async startLoopback(
-    _deviceId?: string,
-    _onChunk?: (pcm16Data: Int16Array, sampleRate: number, channels: number) => void
+    deviceId?: string,
+    onChunk?: (pcm16Data: Int16Array, sampleRate: number, channels: number) => void
   ): Promise<void> {
     this.isLoopbackActive = true;
-    console.log("[WindowsAudioCaptureAdapter] WASAPI Loopback session initiated.");
+
+    if (typeof window !== 'undefined' && (window as any).__STREAMNOTE_ELECTRON__?.startWasapiLoopback) {
+      await (window as any).__STREAMNOTE_ELECTRON__.startWasapiLoopback(deviceId);
+      if (onChunk && (window as any).__STREAMNOTE_ELECTRON__.onWasapiChunk) {
+        this.unsubscribeLoopbackChunk = (window as any).__STREAMNOTE_ELECTRON__.onWasapiChunk((data: any) => {
+          const pcm16 = new Int16Array(data.chunk);
+          onChunk(pcm16, data.sampleRate || 48000, data.channels || 2);
+        });
+      }
+    }
   }
 
   public async startMic(
@@ -106,11 +125,17 @@ export class WindowsAudioCaptureAdapter implements INativeAudioCaptureAdapter {
     _onChunk?: (pcm16Data: Int16Array, sampleRate: number, channels: number) => void
   ): Promise<void> {
     this.isMicActive = true;
-    console.log("[WindowsAudioCaptureAdapter] WASAPI Microphone session initiated.");
   }
 
   public async stopLoopback(): Promise<void> {
     this.isLoopbackActive = false;
+    if (this.unsubscribeLoopbackChunk) {
+      this.unsubscribeLoopbackChunk();
+      this.unsubscribeLoopbackChunk = null;
+    }
+    if (typeof window !== 'undefined' && (window as any).__STREAMNOTE_ELECTRON__?.stopWasapiLoopback) {
+      await (window as any).__STREAMNOTE_ELECTRON__.stopWasapiLoopback();
+    }
   }
 
   public async stopMic(): Promise<void> {

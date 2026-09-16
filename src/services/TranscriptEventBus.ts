@@ -1,4 +1,6 @@
 import { TranscriptSegment, AudioLevels, RecordingState } from '../types';
+import { STTEngineStatusEvent } from './stt/ISTTEngine';
+import { transcriptReconciler } from './TranscriptReconciler';
 
 export type EventBusListener<T> = (data: T) => void;
 
@@ -11,7 +13,11 @@ export interface SourceActiveEvent {
 /**
  * TranscriptEventBus
  * Centralized pub/sub event bus decoupling audio capture & STT pipelines from UI.
- * Handles chronological ordering, deduplication, and speaker/source attribution.
+ * Acts as the final defensive layer ensuring:
+ * 1. Chronological order
+ * 2. Deduplication across case, punctuation, prefix, and suffix overlap
+ * 3. Separation of interim (preview) vs canonical (final) transcripts
+ * 4. STT engine status monitoring (Audio captured vs STT Processing vs STT Completed vs SYSTEM_STT_UNAVAILABLE)
  */
 export class TranscriptEventBus {
   private partialListeners: Set<EventBusListener<TranscriptSegment>> = new Set();
@@ -19,8 +25,7 @@ export class TranscriptEventBus {
   private levelsListeners: Set<EventBusListener<AudioLevels>> = new Set();
   private stateListeners: Set<EventBusListener<RecordingState>> = new Set();
   private sourceActiveListeners: Set<EventBusListener<SourceActiveEvent>> = new Set();
-
-  private segments: TranscriptSegment[] = [];
+  private sttStatusListeners: Set<EventBusListener<STTEngineStatusEvent>> = new Set();
 
   constructor() {}
 
@@ -49,7 +54,14 @@ export class TranscriptEventBus {
     return () => this.sourceActiveListeners.delete(cb);
   }
 
+  public onSTTStatus(cb: EventBusListener<STTEngineStatusEvent>): () => void {
+    this.sttStatusListeners.add(cb);
+    return () => this.sttStatusListeners.delete(cb);
+  }
+
   public emitPartial(segment: TranscriptSegment): void {
+    // Record in reconciler as interim preview
+    transcriptReconciler.pushInterimSegment(segment);
     this.partialListeners.forEach((cb) => {
       try {
         cb(segment);
@@ -60,20 +72,16 @@ export class TranscriptEventBus {
   }
 
   public emitFinal(segment: TranscriptSegment): void {
-    // Deduplication check
-    const isDuplicate = this.segments.some(
-      (s) => s.id === segment.id || (Math.abs(s.startTime - segment.startTime) < 1.0 && s.text.trim().toLowerCase() === segment.text.trim().toLowerCase())
-    );
-
-    if (!isDuplicate) {
-      this.segments.push(segment);
-      // Sort chronologically by startTime
-      this.segments.sort((a, b) => a.startTime - b.startTime);
+    // Pass through defensive reconciliation
+    const reconciled = transcriptReconciler.pushFinalSegment(segment);
+    if (!reconciled) {
+      // Ignored duplicate
+      return;
     }
 
     this.finalListeners.forEach((cb) => {
       try {
-        cb(segment);
+        cb(reconciled);
       } catch (e) {
         console.error("Error in final transcript listener:", e);
       }
@@ -110,12 +118,32 @@ export class TranscriptEventBus {
     });
   }
 
+  public emitSTTStatus(event: STTEngineStatusEvent): void {
+    this.sttStatusListeners.forEach((cb) => {
+      try {
+        cb(event);
+      } catch (e) {
+        console.error("Error in STT status listener:", e);
+      }
+    });
+  }
+
+  /**
+   * Returns canonical transcript segments with ZERO interim results and ZERO duplicates.
+   */
   public getSegments(): TranscriptSegment[] {
-    return [...this.segments];
+    return transcriptReconciler.getCanonicalSegments();
+  }
+
+  /**
+   * Returns canonical dialogue text for Summary, Word count, and AI Notes.
+   */
+  public getCanonicalText(): string {
+    return transcriptReconciler.getCanonicalTranscriptText();
   }
 
   public clear(): void {
-    this.segments = [];
+    transcriptReconciler.clear();
   }
 }
 

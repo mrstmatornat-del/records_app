@@ -2,8 +2,9 @@ import { TranscriptSegment, STTLanguage } from '../types';
 import { VoiceActivityDetector, Utterance } from '../utils/vad';
 import { detectHardwareCapabilities, HardwareProfile } from '../utils/hardwareDetector';
 import { transcriptEventBus } from './TranscriptEventBus';
-
-export type STTModelSize = 'tiny' | 'base' | 'small';
+import { transcriptReconciler } from './TranscriptReconciler';
+import { ISTTEngine, STTModelSize, STTEngineStatus } from './stt/ISTTEngine';
+import { localWhisperEngine } from './stt/LocalWhisperEngine';
 
 export interface STTServiceConfig {
   language: STTLanguage;
@@ -16,28 +17,36 @@ export type TranscriptCallback = (segment: TranscriptSegment) => void;
 /**
  * LocalSTTService
  * 
- * Local Realtime Speech-to-Text Service:
- * - Operates on normalized 16kHz mono 16-bit PCM audio frames.
- * - Dual independent VAD pipelines for Microphone ('Me') and System Audio ('Meeting').
- * - Slices by speech boundaries (VAD) instead of arbitrary 3-second cuts.
- * - Free & local: No cloud Gemini API calls for realtime transcription.
- * - Distinguishes [Me] from [Meeting] participants.
+ * Local Realtime Speech-to-Text Pipeline Supervisor:
+ * - Maintains independent pipelines for Microphone ('Me') and System Audio ('Meeting').
+ * - Normalizes audio to 16kHz mono 16-bit PCM frames.
+ * - Slices by Voice Activity Detection (VAD) boundaries into speech utterances.
+ * - System Audio: Transcribes real utterances via ISTTEngine (Local Whisper / faster-whisper).
+ * - Microphone: Uses browser SpeechRecognition (if available) with strict slot reconciliation,
+ *   or falls back to ISTTEngine.
+ * - Integrates with TranscriptReconciler to guarantee ZERO incremental duplicate pollution.
+ * - Clearly signals SYSTEM_STT_UNAVAILABLE instead of silently returning empty strings.
  */
 export class LocalSTTService {
   private config: STTServiceConfig;
   private isRunning = false;
   private micVAD: VoiceActivityDetector;
   private systemVAD: VoiceActivityDetector;
-  private segmentCounter = 0;
+  private sttEngine: ISTTEngine;
 
   private partialCallbacks: Set<TranscriptCallback> = new Set();
   private finalCallbacks: Set<TranscriptCallback> = new Set();
 
-  // Browser speech recognition fallback for microphone stream
+  // Browser speech recognition for microphone stream
   private browserRecognition: any = null;
   private isBrowserRecognitionActive = false;
+  private recognitionStartTime = 0;
 
-  constructor(config?: Partial<STTServiceConfig>) {
+  // Asynchronous queue for system STT to prevent blocking audio capture
+  private systemTranscriptionQueue: Utterance[] = [];
+  private isTranscribingSystem = false;
+
+  constructor(config?: Partial<STTServiceConfig>, sttEngine?: ISTTEngine) {
     const hw = detectHardwareCapabilities();
     this.config = {
       language: 'en-US',
@@ -46,8 +55,17 @@ export class LocalSTTService {
       ...config,
     };
 
+    this.sttEngine = sttEngine || localWhisperEngine;
     this.micVAD = new VoiceActivityDetector({ energyThreshold: 0.012 });
     this.systemVAD = new VoiceActivityDetector({ energyThreshold: 0.015 });
+  }
+
+  public getSTTEngine(): ISTTEngine {
+    return this.sttEngine;
+  }
+
+  public setSTTEngine(engine: ISTTEngine): void {
+    this.sttEngine = engine;
   }
 
   public getHardwareProfile(): HardwareProfile {
@@ -75,25 +93,49 @@ export class LocalSTTService {
     return () => this.finalCallbacks.delete(cb);
   }
 
-  public start(): void {
+  public async start(): Promise<void> {
     this.isRunning = true;
-    this.segmentCounter = 0;
     this.micVAD = new VoiceActivityDetector({ energyThreshold: 0.012 });
     this.systemVAD = new VoiceActivityDetector({ energyThreshold: 0.015 });
+    this.systemTranscriptionQueue = [];
+    this.isTranscribingSystem = false;
+
+    // Initialize local STT engine
+    try {
+      await this.sttEngine.initialize({
+        language: this.config.language.startsWith('vi') ? 'vi' : 'en',
+        modelSize: this.config.modelSize,
+      });
+
+      transcriptEventBus.emitSTTStatus({
+        source: 'system',
+        status: this.sttEngine.getStatus(),
+        errorCode: null,
+        message: 'System STT engine ready for Teams/Zoom/YouTube speech.',
+      });
+    } catch (err: any) {
+      console.warn('[LocalSTTService] STT engine initialization notice:', err);
+      transcriptEventBus.emitSTTStatus({
+        source: 'system',
+        status: 'unavailable',
+        errorCode: 'SYSTEM_STT_UNAVAILABLE',
+        message: err.message || 'System STT engine unavailable. Audio recording remains active.',
+      });
+    }
 
     this.initBrowserMicAssistant();
   }
 
   public stop(): void {
     this.isRunning = false;
+    this.systemTranscriptionQueue = [];
+
     if (this.browserRecognition) {
       try {
         this.browserRecognition.onend = null;
         this.browserRecognition.onerror = null;
         this.browserRecognition.stop();
-      } catch (e) {
-        // Ignore stop error
-      }
+      } catch (e) {}
       this.browserRecognition = null;
       this.isBrowserRecognitionActive = false;
     }
@@ -112,7 +154,7 @@ export class LocalSTTService {
     const vad = source === 'microphone' ? this.micVAD : this.systemVAD;
     const { utterance, isSpeech } = vad.processFrame(pcm16, timestampSeconds, source);
 
-    // Notify event bus of active speaker source for UI indicators
+    // Notify event bus of active speaker source for UI visual indicators
     transcriptEventBus.emitSourceActive({
       source,
       speaker: source === 'microphone' ? 'Me' : 'Meeting',
@@ -120,63 +162,104 @@ export class LocalSTTService {
     });
 
     if (utterance) {
-      this.handleCompletedUtterance(utterance);
+      if (source === 'system') {
+        this.enqueueSystemUtterance(utterance);
+      } else if (!this.isBrowserRecognitionActive) {
+        // If microphone Web Speech API is not supported in this browser, use local STT engine
+        this.enqueueSystemUtterance(utterance);
+      }
     }
   }
 
-  private handleCompletedUtterance(utterance: Utterance) {
+  /**
+   * Non-blocking queue for system audio utterance transcription
+   */
+  private enqueueSystemUtterance(utterance: Utterance) {
     const duration = utterance.endTime - utterance.startTime;
-    if (duration < 0.3) return; // Skip tiny clicks
+    if (duration < 0.4) return; // Ignore brief mouth clicks/coughs
 
-    // Generate transcript segment from completed utterance
-    // In local desktop shell, this invokes local whisper.cpp / faster-whisper model
-    // In browser fallback mode, this generates clean speaker-attributed segments
-    const text = this.transcribeUtteranceLocally(utterance);
-    if (!text || text.trim().length === 0) return;
-
-    const segment: TranscriptSegment = {
-      id: `stt-${Date.now()}-${++this.segmentCounter}`,
-      startTime: Math.round(utterance.startTime * 10) / 10,
-      endTime: Math.round(utterance.endTime * 10) / 10,
-      timestamp: Math.round(utterance.startTime),
-      text: text.trim(),
-      source: utterance.source,
-      speaker: utterance.speaker,
-      confidence: 0.93,
-      isFinal: true,
-    };
-
-    this.emitFinal(segment);
+    this.systemTranscriptionQueue.push(utterance);
+    this.processNextSystemUtterance();
   }
 
-  private transcribeUtteranceLocally(utterance: Utterance): string {
-    // If browser recognition already produced text for microphone, don't duplicate
-    if (utterance.source === 'microphone' && this.isBrowserRecognitionActive) {
-      return '';
+  private async processNextSystemUtterance() {
+    if (this.isTranscribingSystem || this.systemTranscriptionQueue.length === 0) {
+      return;
     }
 
-    // Heuristic speech pattern synthesis / local simulation for system meeting audio
-    // When whisper.cpp native worker is attached, it replaces this with local inference
-    return '';
-  }
+    this.isTranscribingSystem = true;
+    const utterance = this.systemTranscriptionQueue.shift()!;
 
-  private emitPartial(segment: TranscriptSegment) {
-    transcriptEventBus.emitPartial(segment);
-    this.partialCallbacks.forEach((cb) => cb(segment));
-  }
+    try {
+      transcriptEventBus.emitSTTStatus({
+        source: utterance.source,
+        status: 'processing',
+        errorCode: null,
+        message: 'Transcribing speech utterance...',
+      });
 
-  private emitFinal(segment: TranscriptSegment) {
-    transcriptEventBus.emitFinal(segment);
-    this.finalCallbacks.forEach((cb) => cb(segment));
+      const result = await this.sttEngine.transcribe(utterance.pcm16, 16000, {
+        source: utterance.source,
+        speaker: utterance.speaker,
+        startTime: utterance.startTime,
+        endTime: utterance.endTime,
+      });
+
+      if (result && result.text && result.text.trim().length > 0) {
+        const seg: TranscriptSegment = {
+          id: `stt-${Date.now()}-${Math.round(result.startTime)}`,
+          startTime: result.startTime,
+          endTime: result.endTime,
+          timestamp: Math.round(result.startTime),
+          text: result.text,
+          source: result.source,
+          speaker: result.speaker,
+          confidence: result.confidence,
+          isFinal: true,
+        };
+
+        // Send through defensive reconciliation
+        const reconciled = transcriptReconciler.pushFinalSegment(seg);
+        if (reconciled) {
+          transcriptEventBus.emitFinal(reconciled);
+          this.finalCallbacks.forEach((cb) => cb(reconciled));
+        }
+
+        transcriptEventBus.emitSTTStatus({
+          source: utterance.source,
+          status: 'completed',
+          errorCode: null,
+          message: null,
+        });
+      }
+    } catch (err: any) {
+      console.warn('[LocalSTTService] System STT utterance transcription failed:', err);
+      const code = err?.code || 'SYSTEM_STT_UNAVAILABLE';
+      transcriptEventBus.emitSTTStatus({
+        source: utterance.source,
+        status: 'unavailable',
+        errorCode: code,
+        message: err?.message || 'System STT engine is unavailable for this utterance.',
+      });
+    } finally {
+      this.isTranscribingSystem = false;
+      if (this.systemTranscriptionQueue.length > 0) {
+        this.processNextSystemUtterance();
+      }
+    }
   }
 
   /**
    * Browser Speech Recognition for instant zero-latency mic transcription
+   * Strictly integrated with TranscriptReconciler to prevent incremental duplication.
    */
   private initBrowserMicAssistant() {
     if (typeof window === 'undefined') return;
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRec) return;
+    if (!SpeechRec) {
+      this.isBrowserRecognitionActive = false;
+      return;
+    }
 
     try {
       this.browserRecognition = new SpeechRec();
@@ -185,33 +268,30 @@ export class LocalSTTService {
       this.browserRecognition.lang = this.config.language;
       this.browserRecognition.maxAlternatives = 1;
 
-      let startTime = Date.now();
+      this.recognitionStartTime = Date.now();
 
       this.browserRecognition.onresult = (event: any) => {
-        const elapsed = (Date.now() - startTime) / 1000;
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const result = event.results[i];
-          const text = result[0].transcript.trim();
-          if (!text) continue;
+        const elapsed = (Date.now() - this.recognitionStartTime) / 1000;
 
-          const seg: TranscriptSegment = {
-            id: `mic-${Date.now()}-${i}`,
-            startTime: Math.max(0, Math.round((elapsed - 2) * 10) / 10),
-            endTime: Math.round(elapsed * 10) / 10,
-            timestamp: Math.round(elapsed),
-            text,
-            source: 'microphone',
-            speaker: 'Me',
-            confidence: result[0].confidence || 0.95,
-            isFinal: result.isFinal,
-          };
+        // Use TranscriptReconciler to handle resultIndex and separate interim from final
+        const { interim, newlyCommitted } = transcriptReconciler.handleWebSpeechResult(
+          event,
+          'microphone',
+          'Me',
+          elapsed
+        );
 
-          if (result.isFinal) {
-            this.emitFinal(seg);
-          } else {
-            this.emitPartial(seg);
-          }
+        // Emit interim for live preview if present
+        if (interim) {
+          transcriptEventBus.emitPartial(interim);
+          this.partialCallbacks.forEach((cb) => cb(interim));
         }
+
+        // Emit committed final segments
+        newlyCommitted.forEach((finalSeg) => {
+          transcriptEventBus.emitFinal(finalSeg);
+          this.finalCallbacks.forEach((cb) => cb(finalSeg));
+        });
       };
 
       this.browserRecognition.onend = () => {
@@ -223,19 +303,27 @@ export class LocalSTTService {
       };
 
       this.browserRecognition.onerror = (e: any) => {
-        console.warn("[LocalSTTService] Browser recognition notice:", e.error);
+        console.warn('[LocalSTTService] Browser mic recognition notice:', e.error);
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          transcriptEventBus.emitSTTStatus({
+            source: 'microphone',
+            status: 'unavailable',
+            errorCode: 'MIC_STT_UNAVAILABLE',
+            message: 'Microphone speech recognition permission denied by browser.',
+          });
+        }
       };
 
       this.browserRecognition.start();
       this.isBrowserRecognitionActive = true;
-    } catch (err) {
-      console.warn("[LocalSTTService] Browser Speech Recognition unavailable:", err);
+    } catch (err: any) {
+      console.warn('[LocalSTTService] Browser Speech Recognition unavailable:', err);
       this.isBrowserRecognitionActive = false;
     }
   }
 
   /**
-   * Injects speech from either system or microphone (e.g. from local whisper worker or testing)
+   * Helper to inject transcript segments (e.g. for tests, local worker, or simulation)
    */
   public injectTranscript(
     source: 'microphone' | 'system',
@@ -245,21 +333,27 @@ export class LocalSTTService {
     isFinal = true
   ): void {
     const seg: TranscriptSegment = {
-      id: `inject-${Date.now()}-${++this.segmentCounter}`,
+      id: `inject-${Date.now()}`,
       startTime,
       endTime,
       timestamp: Math.round(startTime),
       text,
       source,
       speaker: source === 'microphone' ? 'Me' : 'Meeting',
-      confidence: 0.94,
+      confidence: 0.95,
       isFinal,
     };
 
     if (isFinal) {
-      this.emitFinal(seg);
+      const reconciled = transcriptReconciler.pushFinalSegment(seg);
+      if (reconciled) {
+        transcriptEventBus.emitFinal(reconciled);
+        this.finalCallbacks.forEach((cb) => cb(reconciled));
+      }
     } else {
-      this.emitPartial(seg);
+      const interim = transcriptReconciler.pushInterimSegment(seg);
+      transcriptEventBus.emitPartial(interim);
+      this.partialCallbacks.forEach((cb) => cb(interim));
     }
   }
 }

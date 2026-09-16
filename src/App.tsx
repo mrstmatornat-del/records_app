@@ -18,6 +18,7 @@ import {
   MeetingContext,
   AudioLevels,
 } from './types';
+import { STTEngineStatusEvent } from './services/stt/ISTTEngine';
 import { AudioCaptureService } from './services/AudioCaptureService';
 import { LocalSTTService } from './services/LocalSTTService';
 import { transcriptEventBus } from './services/TranscriptEventBus';
@@ -64,6 +65,8 @@ export default function App() {
 
   const [currentSession, setCurrentSession] = useState<AudioSession | null>(DEMO_SESSIONS[0]);
   const [transcript, setTranscript] = useState<TranscriptSegment[]>(DEMO_SESSIONS[0].transcript);
+  const [interimSegment, setInterimSegment] = useState<TranscriptSegment | null>(null);
+  const [sttStatus, setSttStatus] = useState<STTEngineStatusEvent | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -117,32 +120,20 @@ export default function App() {
       setErrorMessage(err);
     });
 
-    // Connect EventBus partial transcript
+    // Connect EventBus partial transcript (live interim preview)
     const unsubPartial = transcriptEventBus.onPartialSegment((segment) => {
-      setTranscript((prev) => {
-        const existingIdx = prev.findIndex((s) => s.id === segment.id);
-        if (existingIdx >= 0) {
-          const updated = [...prev];
-          updated[existingIdx] = segment;
-          return updated;
-        } else {
-          return [...prev, segment];
-        }
-      });
+      setInterimSegment(segment);
     });
 
-    // Connect EventBus final transcript
-    const unsubFinal = transcriptEventBus.onFinalSegment((segment) => {
-      setTranscript((prev) => {
-        const existingIdx = prev.findIndex((s) => s.id === segment.id);
-        if (existingIdx >= 0) {
-          const updated = [...prev];
-          updated[existingIdx] = segment;
-          return updated;
-        } else {
-          return [...prev, segment];
-        }
-      });
+    // Connect EventBus final transcript (reconciled canonical segments)
+    const unsubFinal = transcriptEventBus.onFinalSegment(() => {
+      setInterimSegment(null);
+      setTranscript(transcriptEventBus.getSegments());
+    });
+
+    // Connect STT Engine status monitoring (Audio captured vs STT Processing vs STT Completed vs SYSTEM_STT_UNAVAILABLE)
+    const unsubStatus = transcriptEventBus.onSTTStatus((status) => {
+      setSttStatus(status);
     });
 
     // Stream PCM audio frames from AudioCaptureService to LocalSTTService
@@ -159,6 +150,7 @@ export default function App() {
       unsubErr();
       unsubPartial();
       unsubFinal();
+      unsubStatus();
       unsubFrames();
       if (audioCaptureRef.current) audioCaptureRef.current.stop();
       if (sttServiceRef.current) sttServiceRef.current.stop();
@@ -194,6 +186,8 @@ export default function App() {
     setIsRecording(true);
     setIsPaused(false);
     setAudioLevels({ micLevel: 0, systemLevel: 0 });
+    setInterimSegment(null);
+    setSttStatus(null);
     setAudioUrl(undefined);
     transcriptEventBus.clear();
 
@@ -255,12 +249,12 @@ export default function App() {
       setAudioUrl(recordedAudioUrl);
     }
 
-    const currentTranscript = transcriptEventBus.getSegments().length > 0
-      ? transcriptEventBus.getSegments()
-      : transcript;
+    setInterimSegment(null);
+    const canonicalSegments = transcriptEventBus.getSegments();
+    setTranscript(canonicalSegments);
 
-    // Trigger structured AI Analysis
-    await analyzeTranscript(currentTranscript, finalDuration, recordedAudioUrl);
+    // Trigger structured AI Analysis strictly from canonical segments
+    await analyzeTranscript(canonicalSegments, finalDuration, recordedAudioUrl);
   };
 
   // Analyze session transcript via Gemini post-meeting reasoning or Local Offline engine
@@ -511,8 +505,14 @@ export default function App() {
                 </div>
                 <LiveTranscript
                   transcript={transcript}
+                  interimSegment={interimSegment}
+                  sttStatus={sttStatus}
                   isRecording={isRecording}
-                  onClear={() => setTranscript([])}
+                  onClear={() => {
+                    transcriptEventBus.clear();
+                    setTranscript([]);
+                    setInterimSegment(null);
+                  }}
                   audioSource={audioSource}
                   onSeekTimestamp={handleSeekTimestamp}
                   activeTimestamp={activePlaybackTime}
