@@ -4,7 +4,7 @@ import { detectHardwareCapabilities, HardwareProfile } from '../utils/hardwareDe
 import { transcriptEventBus } from './TranscriptEventBus';
 import { transcriptReconciler } from './TranscriptReconciler';
 import { ISTTEngine, STTModelSize, STTEngineStatus } from './stt/ISTTEngine';
-import { browserWhisperEngine } from './stt/BrowserWhisperEngine';
+import { localServerWhisperEngine } from './stt/LocalServerWhisperEngine';
 
 export interface STTServiceConfig {
   language: STTLanguage;
@@ -55,7 +55,7 @@ export class LocalSTTService {
       ...config,
     };
 
-    this.sttEngine = sttEngine || browserWhisperEngine;
+    this.sttEngine = sttEngine || localServerWhisperEngine;
     this.micVAD = new VoiceActivityDetector({ energyThreshold: 0.012 });
     // System/tab audio (YouTube, Teams, Zoom) commonly arrives quieter and more
     // normalized than a close-talking mic, so it needs a lower trigger threshold

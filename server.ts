@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { transcribeLocalPcm, type WhisperModelSize } from "./server/localWhisperEngine";
 
 const app = express();
 const PORT = 3000;
@@ -349,13 +350,57 @@ Provide a direct, helpful, and concise answer based on the transcript above. If 
   }
 });
 
-// NOTE: Live speech-to-text (both microphone and system/meeting audio) now runs
-// entirely on-device: microphone uses the browser's built-in Web Speech API, and
-// system/meeting audio uses a local in-browser Whisper model (@xenova/transformers,
-// WebAssembly) — see src/services/stt/BrowserWhisperEngine.ts. Neither path calls
-// this server or Gemini anymore, so live transcription has no per-utterance API
-// cost and works fully offline after the model's one-time download. Gemini is
-// reserved exclusively for the one-shot end-of-meeting summary/Q&A below.
+// Live speech-to-text for system/meeting audio: local Whisper inference running
+// in THIS Node process (not a cloud call) — see server/localWhisperEngine.ts for
+// why it runs server-side rather than in a browser Worker. Microphone audio uses
+// the browser's own built-in Web Speech API and never touches this endpoint.
+// Neither path calls Gemini, so live transcription has no per-utterance API cost.
+// Gemini is reserved exclusively for the one-shot end-of-meeting summary/Q&A above.
+app.post("/api/stt/transcribe-local", async (req, res) => {
+  try {
+    const {
+      pcmBase64,
+      language = "en",
+      modelSize = "base",
+      source = "system",
+      startTime = 0,
+      endTime = 0,
+    } = req.body;
+
+    if (!pcmBase64 || typeof pcmBase64 !== "string") {
+      return res.status(400).json({
+        error: "INVALID_AUDIO_PAYLOAD",
+        code: "INVALID_AUDIO_PAYLOAD",
+        message: "PCM audio data is required.",
+      });
+    }
+
+    const pcmBuffer = Buffer.from(pcmBase64, "base64");
+    if (pcmBuffer.length < 3200) {
+      // Less than ~100ms at 16kHz 16-bit mono.
+      return res.json({ text: "", confidence: 1.0, startTime, endTime, source, isFinal: true });
+    }
+
+    const text = await transcribeLocalPcm(pcmBuffer, language, modelSize as WhisperModelSize);
+
+    res.json({
+      text,
+      confidence: 0.9,
+      startTime,
+      endTime,
+      source,
+      speaker: source === "system" ? "Meeting" : "Me",
+      isFinal: true,
+    });
+  } catch (err: any) {
+    console.error("Local Whisper transcription error:", err);
+    return res.status(503).json({
+      error: "SYSTEM_STT_UNAVAILABLE",
+      code: "SYSTEM_STT_UNAVAILABLE",
+      message: err?.message || "Local Whisper model failed to load or run.",
+    });
+  }
+});
 
 async function startServer() {
   // Mount Vite dev server in non-production, static files in production

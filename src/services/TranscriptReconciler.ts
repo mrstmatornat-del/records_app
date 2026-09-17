@@ -81,9 +81,25 @@ export class TranscriptReconciler {
         return last;
       }
 
+      // 2b. Reverse prefix duplication: incoming text is a STALE/SHORTER subset of
+      // what's already committed (e.g. a recognizer restart re-emits an earlier or
+      // trailing fragment after the fuller text was already finalized). Absorb it
+      // without creating a spurious duplicate segment.
+      if (isNormalizedPrefix(text, last.text)) {
+        last.endTime = Math.max(last.endTime, segment.endTime || segment.startTime + 2);
+        return last;
+      }
+
       // 3. Suffix / Overlap duplication ("I have a cat, something" + "something very huge")
       const merged = mergeTranscriptTexts(last.text, text);
-      if (merged !== null && merged !== last.text && merged !== text) {
+      if (merged !== null) {
+        if (merged === last.text) {
+          // Incoming text contributed no new words (fully contained/overlapping
+          // already-committed text) — absorb it instead of falling through to
+          // "genuinely new segment", which would otherwise duplicate the line.
+          last.endTime = Math.max(last.endTime, segment.endTime || segment.startTime + 2);
+          return last;
+        }
         last.text = merged;
         last.endTime = Math.max(last.endTime, segment.endTime || segment.startTime + 2);
         last.isFinal = true;

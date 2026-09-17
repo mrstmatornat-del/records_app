@@ -283,6 +283,72 @@ describe('TranscriptReconciler - Required Tests', () => {
     expect(reconciler.getActiveInterimSegments().length).toBe(0);
   });
 
+  // TEST 11: Stale/shorter final arriving AFTER a longer one is already committed
+  // (e.g. Chrome's Web Speech API restarting recognition mid-utterance and
+  // re-emitting an earlier fragment as its own final result).
+  it('TEST 11: does not duplicate when a shorter subset final arrives after the fuller text was already committed', () => {
+    reconciler.pushFinalSegment({
+      id: 'fin-1',
+      startTime: 1.0,
+      endTime: 2.0,
+      timestamp: 1,
+      text: 'I have a cat',
+      source: 'microphone',
+      speaker: 'Me',
+      confidence: 0.9,
+      isFinal: true,
+    });
+
+    // A stale re-emission of an earlier fragment, arriving out of order.
+    reconciler.pushFinalSegment({
+      id: 'fin-2',
+      startTime: 1.0,
+      endTime: 1.4,
+      timestamp: 1,
+      text: 'I have a',
+      source: 'microphone',
+      speaker: 'Me',
+      confidence: 0.8,
+      isFinal: true,
+    });
+
+    const canonical = reconciler.getCanonicalSegments();
+    expect(canonical.length).toBe(1);
+    expect(canonical[0].text).toBe('I have a cat');
+  });
+
+  // TEST 12: A recognizer restart re-emitting the trailing word of the last
+  // committed segment as its own short final (pure overlap, no new content).
+  it('TEST 12: does not duplicate when incoming final is just a repeated trailing word with no new content', () => {
+    reconciler.pushFinalSegment({
+      id: 'fin-1',
+      startTime: 1.0,
+      endTime: 2.0,
+      timestamp: 1,
+      text: 'I have a cat',
+      source: 'microphone',
+      speaker: 'Me',
+      confidence: 0.9,
+      isFinal: true,
+    });
+
+    reconciler.pushFinalSegment({
+      id: 'fin-2',
+      startTime: 2.0,
+      endTime: 2.2,
+      timestamp: 2,
+      text: 'cat',
+      source: 'microphone',
+      speaker: 'Me',
+      confidence: 0.7,
+      isFinal: true,
+    });
+
+    const canonical = reconciler.getCanonicalSegments();
+    expect(canonical.length).toBe(1);
+    expect(canonical[0].text).toBe('I have a cat');
+  });
+
   // TEST 10: Long meeting with multiple utterances preserves chronological order
   it('TEST 10: preserves strict chronological order across multiple utterances', () => {
     reconciler.pushFinalSegment({
