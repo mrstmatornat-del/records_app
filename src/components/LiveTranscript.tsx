@@ -40,10 +40,22 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const wasNearBottomRef = useRef(true);
 
-  // Auto-scroll to bottom on new transcripts
+  // Track whether the user is (still) parked near the bottom, so we know
+  // whether a new transcript line should auto-follow or leave them alone.
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    wasNearBottomRef.current = distanceFromBottom < 80;
+  };
+
+  // Auto-scroll to bottom on new transcripts — but only if the user was
+  // already at the bottom. If they scrolled up to review history, leave the
+  // view where they put it instead of yanking them back down.
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && wasNearBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [transcript, interimSegment]);
@@ -195,7 +207,7 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
       </div>
 
       {/* Transcript Feed Body */}
-      <div ref={scrollRef} className="flex-1 p-4 overflow-y-auto space-y-3 font-sans">
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 p-4 overflow-y-auto space-y-3 font-sans">
         {filteredSegments.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
             {isRecording ? (

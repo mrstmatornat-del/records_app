@@ -129,9 +129,30 @@ export class LocalSTTService {
     this.initBrowserMicAssistant();
   }
 
-  public stop(): void {
+  /**
+   * Stops the STT pipeline. When `elapsedSeconds` is provided, flushes any
+   * still-in-progress VAD utterance (audio captured but not yet long enough
+   * to hit a silence gap or the max-duration cap) instead of silently
+   * dropping the last few seconds of speech when the user hits STOP.
+   */
+  public stop(elapsedSeconds?: number): void {
     this.isRunning = false;
-    this.systemTranscriptionQueue = [];
+
+    if (typeof elapsedSeconds === 'number') {
+      const systemUtterance = this.systemVAD.flush(elapsedSeconds, 'system');
+      if (systemUtterance && systemUtterance.endTime - systemUtterance.startTime >= 0.4) {
+        this.systemTranscriptionQueue.push(systemUtterance);
+      }
+      if (!this.isBrowserRecognitionActive) {
+        const micUtterance = this.micVAD.flush(elapsedSeconds, 'microphone');
+        if (micUtterance && micUtterance.endTime - micUtterance.startTime >= 0.4) {
+          this.systemTranscriptionQueue.push(micUtterance);
+        }
+      }
+      this.processNextSystemUtterance();
+    } else {
+      this.systemTranscriptionQueue = [];
+    }
 
     if (this.browserRecognition) {
       try {

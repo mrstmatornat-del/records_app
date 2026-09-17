@@ -233,7 +233,9 @@ export const AINotesPanel: React.FC<AINotesPanelProps> = ({
           Meeting Intelligence Pending
         </h3>
         <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mt-1 mb-4">
-          Click <span className="font-semibold text-red-600 dark:text-red-400">STOP</span> when your meeting ends or load a demo session to automatically generate structured Notion-like meeting notes.
+          Your recording is saved. Click the button below whenever you're
+          ready to generate structured Notion-like meeting notes — this runs
+          on demand so testing doesn't burn API quota.
         </p>
         {onReAnalyze && transcriptText.length > 0 && (
           <button

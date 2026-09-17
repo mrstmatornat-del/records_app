@@ -9,6 +9,7 @@ export interface VADConfig {
   energyThreshold: number; // RMS threshold between speech and silence (default 0.015)
   silenceHangoverFrames: number; // frames of silence before ending utterance (~500ms)
   minSpeechFrames: number; // minimum frames to count as valid speech (~200ms)
+  maxUtteranceSeconds: number; // force-flush a still-speaking utterance after this long
 }
 
 export interface Utterance {
@@ -33,13 +34,18 @@ export class VoiceActivityDetector {
       energyThreshold: 0.015,
       silenceHangoverFrames: 12, // ~500ms at ~40ms/frame
       minSpeechFrames: 4, // ~160ms
+      // Continuous audio (music, video, meeting chatter with no clean pause)
+      // may never produce a silence gap at all. Without a cap, an utterance
+      // would keep growing forever and STT would never receive anything.
+      maxUtteranceSeconds: 15,
       ...config,
     };
   }
 
   /**
    * Process a 16kHz 16-bit PCM frame
-   * Returns a completed Utterance if silence hangover was reached, otherwise null.
+   * Returns a completed Utterance if silence hangover was reached or the
+   * in-progress utterance hit the max-duration cap, otherwise null.
    */
   public processFrame(
     pcm16: Int16Array,
@@ -62,6 +68,26 @@ export class VoiceActivityDetector {
 
       if (this.isSpeaking) {
         this.currentUtteranceChunks.push(pcm16);
+
+        // Force-flush without waiting for silence, so uninterrupted audio
+        // (background music, continuous meeting chatter) still gets
+        // transcribed periodically instead of never at all.
+        if (timestampSeconds - this.utteranceStartTime >= this.config.maxUtteranceSeconds) {
+          const endTime = timestampSeconds;
+          const concatenated = this.concatenateChunks(this.currentUtteranceChunks);
+          completedUtterance = {
+            source,
+            speaker: source === 'microphone' ? 'Me' : 'Meeting',
+            startTime: this.utteranceStartTime,
+            endTime,
+            pcm16: concatenated,
+          };
+          // Speech is still ongoing — start the next utterance immediately
+          // rather than waiting for a silence gap that may never come.
+          this.currentUtteranceChunks = [];
+          this.utteranceStartTime = timestampSeconds;
+          this.consecutiveSilenceFrames = 0;
+        }
       }
     } else {
       this.consecutiveSpeechFrames = 0;

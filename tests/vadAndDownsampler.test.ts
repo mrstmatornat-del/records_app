@@ -99,4 +99,42 @@ describe('Voice Activity Detector (VAD)', () => {
     expect(res.utterance?.speaker).toBe('Meeting');
     expect(res.utterance?.endTime).toBe(0.24);
   });
+
+  it('force-flushes a still-speaking utterance once it hits the max-duration cap, then keeps listening', () => {
+    const vad = new VoiceActivityDetector({
+      sampleRate: 16000,
+      energyThreshold: 0.02,
+      silenceHangoverFrames: 12,
+      minSpeechFrames: 2,
+      maxUtteranceSeconds: 0.2, // tiny cap for a fast test
+    });
+
+    const speechFrame = new Int16Array(640).fill(8000);
+
+    // Reach minSpeechFrames to start the utterance.
+    vad.processFrame(speechFrame, 0.04, 'system');
+    let res = vad.processFrame(speechFrame, 0.08, 'system');
+    expect(res.isSpeech).toBe(true);
+    expect(res.utterance).toBeNull();
+
+    // Keep feeding continuous speech with NO silence gap at all.
+    res = vad.processFrame(speechFrame, 0.12, 'system');
+    expect(res.utterance).toBeNull();
+    res = vad.processFrame(speechFrame, 0.16, 'system');
+    expect(res.utterance).toBeNull();
+
+    // This frame pushes elapsed time (since utterance start ~0.0) past the
+    // 0.2s cap — must force-flush instead of waiting for silence forever.
+    res = vad.processFrame(speechFrame, 0.24, 'system');
+    expect(res.utterance).not.toBeNull();
+    expect(res.utterance?.source).toBe('system');
+    // Still speaking — the detector should immediately start a new utterance
+    // rather than requiring another minSpeechFrames ramp-up.
+    expect(res.isSpeech).toBe(true);
+
+    // Continuing speech accumulates into the NEW utterance without being lost.
+    res = vad.processFrame(speechFrame, 0.28, 'system');
+    expect(res.utterance).toBeNull();
+    expect(res.isSpeech).toBe(true);
+  });
 });

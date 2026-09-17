@@ -108,6 +108,20 @@ rough order of likelihood):
    (`src/services/LocalSTTService.ts`, `systemVAD`) may need tuning further
    down for very quiet tab/system audio.
 
+**A second, more fundamental VAD gap was found and fixed**: `VoiceActivityDetector`
+only completed an utterance (and handed it to STT) after a silence gap. Real
+device/meeting audio — background music, a video with no clean pauses,
+continuous chatter — can go a very long time (or forever) without ever
+dropping below the energy threshold, so an utterance could accumulate
+indefinitely and *never* reach STT at all: audio capture and levels looked
+completely normal, but zero text was ever produced, no error either. Fixed in
+`src/utils/vad.ts` with a `maxUtteranceSeconds` cap (default 15s) that
+force-flushes an in-progress utterance and immediately starts the next one
+without waiting for silence. Also, `LocalSTTService.stop()` now flushes any
+still-in-progress utterance (mic VAD fallback and system) instead of
+discarding the last few seconds of speech when you hit STOP. Covered by a new
+test in `tests/vadAndDownsampler.test.ts`.
+
 ### Deduplication — `src/services/TranscriptReconciler.ts` + `src/utils/transcriptNormalization.ts`
 
 Streaming STT naturally emits growing partial hypotheses ("I have a" → "I
@@ -152,6 +166,28 @@ already dead code (nothing imported it) and has been deleted.
 open questions) and `/api/ask-session` (Q&A over the transcript) call Gemini
 once per action, not per utterance. Both also support a local Ollama backend
 as an alternative (`engineType: "local-ollama"`).
+
+**Summary generation is manual, not automatic.** Hitting STOP saves the
+recorded session (transcript + audio) into history immediately — see
+`handleEndRecording` in `src/App.tsx` — but does **not** call Gemini. The
+`AINotesPanel` empty state shows a "Generate Meeting Notes Now" button
+(`onReAnalyze`) that the user clicks when they actually want the summary.
+This was a deliberate change: while iterating on STT (repeated start/stop
+testing), an automatic Gemini call on every STOP burned API quota for no
+reason.
+
+### Live transcript history
+
+- Starting a new recording used to silently discard whatever was in the
+  transcript panel if you hadn't clicked STOP yet. Since STOP now saves to
+  `sessions` (and `sessions` is persisted to `localStorage`) immediately
+  rather than waiting on AI analysis, a finished recording is safe in history
+  before you ever start the next one.
+- `LiveTranscript.tsx` used to force-scroll to the bottom on every new line,
+  making it impossible to scroll up and read earlier lines while still
+  recording. It now only auto-follows new lines if you were already near the
+  bottom (standard "sticky scroll" behavior) — scroll up to review, and it
+  won't yank you back down.
 
 ## Known limitations / good next steps
 

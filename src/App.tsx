@@ -228,7 +228,12 @@ export default function App() {
     if (audioCaptureRef.current) audioCaptureRef.current.resume();
   };
 
-  // Handle STOP Meeting Recording & Post-Meeting Gemini Reasoning
+  // Handle STOP Meeting Recording
+  // NOTE: this no longer auto-triggers Gemini analysis. The recorded session
+  // (transcript + audio) is saved to history immediately so it's never lost,
+  // and AI summary generation is a manual click (AINotesPanel's "Generate
+  // Meeting Notes Now" button, wired to analyzeTranscript below) so repeated
+  // start/stop testing doesn't burn API quota on every run.
   const handleEndRecording = async () => {
     if (timerRef.current) clearInterval(timerRef.current);
     setIsRecording(false);
@@ -239,7 +244,7 @@ export default function App() {
     let recordedAudioUrl: string | undefined;
 
     if (sttServiceRef.current) {
-      sttServiceRef.current.stop();
+      sttServiceRef.current.stop(durationSeconds);
     }
 
     if (audioCaptureRef.current) {
@@ -252,9 +257,27 @@ export default function App() {
     setInterimSegment(null);
     const canonicalSegments = transcriptEventBus.getSegments();
     setTranscript(canonicalSegments);
+    setDurationSeconds(finalDuration);
 
-    // Trigger structured AI Analysis strictly from canonical segments
-    await analyzeTranscript(canonicalSegments, finalDuration, recordedAudioUrl);
+    if (canonicalSegments.length === 0) {
+      setErrorMessage('Chưa có nội dung cuộc họp nào được ghi lại.');
+      return;
+    }
+
+    const recordedSession: AudioSession = {
+      id: currentSession?.id || `session-${Date.now()}`,
+      title: currentSession?.title || meetingContext.title || 'Meeting Session',
+      context: meetingContext,
+      createdAt: currentSession?.createdAt || new Date().toISOString(),
+      durationSeconds: finalDuration,
+      transcript: canonicalSegments,
+      analysis: currentSession?.analysis,
+      audioSource,
+      status: 'completed',
+      audioBlobUrl: recordedAudioUrl,
+    };
+    setCurrentSession(recordedSession);
+    setSessions((prev) => [recordedSession, ...prev.filter((s) => s.id !== recordedSession.id)]);
   };
 
   // Analyze session transcript via Gemini post-meeting reasoning or Local Offline engine
